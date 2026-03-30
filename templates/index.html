@@ -1016,7 +1016,13 @@
 
   // ── CONTRÔLES ──
   function ctrl(action) {
-    fetch(`/control/${action}`, { method: 'POST' });
+    // Use devFetch so the DEV_PIN header is included automatically when available.
+    try {
+      devFetch(`/control/${action}`, { method: 'POST' });
+    } catch (e) {
+      // Fallback to plain fetch if devFetch is not defined for any reason
+      fetch(`/control/${action}`, { method: 'POST' });
+    }
   }
 
   function togglePlay() {
@@ -1322,7 +1328,12 @@
   }
 
   function confirmExit() {
-    fetch('/exit', { method: 'POST' });
+    // Send PIN header if available via devFetch (fallback to fetch)
+    try {
+      devFetch('/exit', { method: 'POST' });
+    } catch (e) {
+      fetch('/exit', { method: 'POST' });
+    }
   }
 
   function reloadKiosk() {

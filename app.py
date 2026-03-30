@@ -53,8 +53,9 @@ except Exception:
 # Developer PIN and control enforcement
 # DEV_PIN must be set in the environment (.env). If empty, dev endpoints will be rejected.
 DEV_PIN = os.getenv('DEV_PIN', '')
-# Control endpoints protection is optional. Set to 'true' to require the PIN for /control/* as well.
-REQUIRE_CONTROL_PIN = os.getenv('REQUIRE_CONTROL_PIN', 'false').lower() in ('1', 'true', 'yes')
+# Control endpoints protection: set to 'true' to require the PIN for /control/*.
+# Default is now 'true' to protect control routes by default.
+REQUIRE_CONTROL_PIN = os.getenv('REQUIRE_CONTROL_PIN', 'true').lower() in ('1', 'true', 'yes')
 
 # Read Spotify credentials from environment (no fallbacks)
 CLIENT_ID = os.getenv('SPOTIPY_CLIENT_ID')
@@ -280,8 +281,9 @@ except Exception:
 @app.before_request
 def _enforce_dev_pin():
     path = (request.path or "").lower()
-    # only enforce for endpoints that start with /dev or /control
-    if path.startswith('/dev') or path.startswith('/control'):
+    # Enforce PIN for developer endpoints, control endpoints (configurable),
+    # and the `/exit` route (always protected).
+    if path.startswith('/dev') or path.startswith('/control') or path.startswith('/exit'):
         # /control endpoints can be left open if REQUIRE_CONTROL_PIN is False
         if path.startswith('/control') and not REQUIRE_CONTROL_PIN:
             return None
