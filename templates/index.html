@@ -367,6 +367,9 @@
 <div id="bg-blur"></div>
 <div id="bg-overlay"></div>
 
+<!-- Quota banner (shown when Spotify 429 / quota exceeded) -->
+<div id="quota-banner" style="display:none; position: fixed; top: 2vh; left: 50%; transform: translateX(-50%); z-index: 210; background: rgba(233,69,96,0.95); color: white; padding: 0.6vw 1vw; border-radius: 0.6vw; font-weight:700; box-shadow: 0 0.6vw 1vw rgba(0,0,0,0.4);"></div>
+
 <div id="secret-zone"></div>
 
 <div id="exit-popup">
@@ -409,6 +412,7 @@
       <button onclick="devResetWeather()" class="dev-small">Reset météo</button>
       <button onclick="devResetTime()" class="dev-small">Reset heure</button>
       <button onclick="devReconnectSpotify()" class="dev-small">Reconnect Spotify</button>
+      <button onclick="simulate429()" class="dev-small">Simuler Erreur 429 (10s)</button>
       <button onclick="devClearOverrides()" class="dev-small">Clear Overrides</button>
     </div>
     <div style="margin-top:1vw;">
@@ -696,9 +700,11 @@
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }).then(d => {
-      document.getElementById('weather-temp').textContent = `${d.temp}°`;
-      document.getElementById('weather-desc').textContent = d.desc;
-      const code = parseInt(d.icon);
+      const temp = (d && typeof d.temp !== 'undefined') ? d.temp : '--';
+      const desc = (d && d.desc) ? d.desc : 'N/A';
+      document.getElementById('weather-temp').textContent = `${temp}°`;
+      document.getElementById('weather-desc').textContent = desc;
+      const code = parseInt(d && d.icon) || 113;
       let icon = '🌤';
       if (code === 113) icon = '☀️';
       else if ([116,119,122].includes(code)) icon = '☁️';
@@ -858,6 +864,22 @@
   // extract handler so we can attach the EventSource after DOM is ready
   function handleStreamMessage(e) {
     const d = JSON.parse(e.data);
+
+    // Show quota banner if server reports Spotify rate-limit (429)
+    try {
+      const quotaBanner = document.getElementById('quota-banner');
+      if (d.quota_exceeded) {
+        if (quotaBanner) {
+          const secs = d.retry_after || 30;
+          quotaBanner.textContent = `Quota Spotify dépassé - Pause de ${secs} secondes`;
+          quotaBanner.style.display = 'block';
+        } else {
+          showToast('Quota Spotify dépassé', 'error');
+        }
+      } else {
+        if (quotaBanner) quotaBanner.style.display = 'none';
+      }
+    } catch (err) { /* ignore */ }
 
     // --- Apply dev overrides coming from server SSE ---
     if (typeof d.auto_sleep !== 'undefined') {
@@ -1219,6 +1241,15 @@
       if (j.ok) showToast('Reconnect Spotify OK', 'success');
       else showToast('Reconnect failed: ' + (j.error || JSON.stringify(j)), 'error');
     }).catch(e=> showToast('Erreur reconnect','error'));
+  }
+
+  function simulate429() {
+    devFetch('/dev/simulate_429', {method:'POST'})
+      .then(r => r.json())
+      .then(j => {
+        if (j && j.ok) showToast('Simulation 429 activée (10s)', 'success');
+        else showToast('Échec simulation: ' + (j && j.error ? j.error : JSON.stringify(j)), 'error');
+      }).catch(e => showToast('Erreur simulate 429', 'error'));
   }
 
   // Apply brightness override (if set) or use default CSS behavior

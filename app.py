@@ -16,6 +16,11 @@ from flask import Flask, render_template, Response, jsonify, request
 import psutil
 from lyricsgenius import Genius
 from collections import deque
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except Exception:
+    Retry = None
 
 def _load_env_file(path):
     if not os.path.exists(path):
@@ -96,6 +101,12 @@ state = {
     "duration_ms": 1,
     "is_playing": False,
     "last_api_time": 0,
+    # Quota / rate-limit state (Spotify 429 handling)
+    "quota_exceeded": False,
+    # delay in seconds as reported by Spotify (Retry-After)
+    "retry_after": 0,
+    # epoch timestamp (time.time()) until which calls should be suppressed
+    "retry_after_until": 0,
 }
 state_lock = threading.Lock()
 dev_overrides = {"cpu": None, "ram": None, "battery": None, "auto_sleep": True, "forced_sleep": False, "brightness": None}
@@ -103,6 +114,24 @@ dev_overrides = {"cpu": None, "ram": None, "battery": None, "auto_sleep": True, 
 # Weather cache (update only every 20 minutes)
 weather_cache = {"data": None, "timestamp": 0}
 WEATHER_UPDATE_INTERVAL = 20 * 60  # 20 minutes
+
+# Requests session for weather with retry strategy
+WEATHER_SESSION = requests.Session()
+try:
+    def _make_retry():
+        try:
+            return Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504], allowed_methods=["GET", "HEAD", "OPTIONS"])
+        except TypeError:
+            return Retry(total=2, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504], method_whitelist=["GET", "HEAD", "OPTIONS"])
+    WEATHER_SESSION.mount("https://", HTTPAdapter(max_retries=_make_retry()))
+    WEATHER_SESSION.mount("http://", HTTPAdapter(max_retries=_make_retry()))
+except Exception:
+    # If retry isn't available, continue with default session
+    pass
+
+# Lock to protect weather_cache and refresh in progress flag
+weather_lock = threading.Lock()
+weather_refresh_in_progress = False
 
 WEATHER_FR = {
     "113": "Ensoleillé", "116": "Partiellement nuageux", "119": "Nuageux",
@@ -216,14 +245,108 @@ def safe_spotify_request(func, *args, **kwargs):
     """Wrapper for calling Spotify API that enforces quota limits.
     Returns a dict: {'ok': True, 'result': ...} or {'ok': False, 'quota': True} or {'ok': False, 'error': Exception}
     """
+    # Local quota check (our own rate limiting)
     if not should_make_api_call():
         with metrics_lock:
             metrics["quota_exceeded_total"] += 1
+        # Mark a local quota-exceeded condition in state so the UI can show it.
+        try:
+            with state_lock:
+                state['quota_exceeded'] = True
+                # pessimistic default delay when local quota reached
+                state['retry_after'] = 30
+                state['retry_after_until'] = time.time() + 30
+            # schedule clear of local quota after the delay to avoid permanent state
+            def _clear_local_quota():
+                try:
+                    with state_lock:
+                        state['quota_exceeded'] = False
+                        state['retry_after'] = 0
+                        state['retry_after_until'] = 0
+                except Exception:
+                    pass
+                try:
+                    poll_event.set()
+                except Exception:
+                    pass
+            try:
+                threading.Timer(30, _clear_local_quota).start()
+            except Exception:
+                pass
+            # wake fetch loop / SSE generator quickly
+            poll_event.set()
+        except Exception:
+            pass
         return {'ok': False, 'quota': True}
+
     try:
         res = func(*args, **kwargs)
+    except SpotifyException as e:
+        # Handle Spotify 429 Too Many Requests
+        status = getattr(e, 'http_status', None)
+        # spotipy may also expose .status or expose headers on the exception
+        if status == 429 or (hasattr(e, 'status') and getattr(e, 'status') == 429):
+            # default retry delay
+            delay = 30
+            try:
+                # Try to extract Retry-After from multiple possible locations
+                hdrs = None
+                if hasattr(e, 'headers') and e.headers:
+                    hdrs = e.headers
+                elif hasattr(e, 'http_headers') and e.http_headers:
+                    hdrs = e.http_headers
+                elif hasattr(e, 'response') and getattr(e.response, 'headers', None):
+                    hdrs = e.response.headers
+
+                if hdrs:
+                    val = hdrs.get('Retry-After') or hdrs.get('retry-after')
+                    if val is not None:
+                        try:
+                            delay = int(val)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            retry_after_until = time.time() + delay
+            with state_lock:
+                state['quota_exceeded'] = True
+                state['retry_after'] = delay
+                state['retry_after_until'] = retry_after_until
+
+            # Wake fetch loop / SSE so clients get an immediate update
+            try:
+                poll_event.set()
+            except Exception:
+                pass
+
+            # Schedule a clear of the quota flag after the delay (idempotent)
+            def _clear_quota():
+                try:
+                    with state_lock:
+                        state['quota_exceeded'] = False
+                        state['retry_after'] = 0
+                        state['retry_after_until'] = 0
+                except Exception:
+                    pass
+                try:
+                    poll_event.set()
+                except Exception:
+                    pass
+
+            try:
+                threading.Timer(delay, _clear_quota).start()
+            except Exception:
+                # best-effort: if we can't schedule a timer, clear on next loop
+                pass
+
+            return {'ok': False, 'quota': True, 'retry_after': delay}
+        # Other Spotify exceptions fallthrough as errors
+        return {'ok': False, 'error': e}
     except Exception as e:
         return {'ok': False, 'error': e}
+
+    # Successful call — record it
     record_api_call()
     return {'ok': True, 'result': res}
 
@@ -231,6 +354,8 @@ def safe_spotify_request(func, *args, **kwargs):
 poll_event = threading.Event()
 # fast poll counter (global), modified by control endpoints
 fast_polls_remaining = 0
+# module-level helper: timestamp until which Spotify calls are suppressed (seconds since epoch)
+retry_after_until = 0
 
 # Persistent cache for playlist names to avoid repeated calls to sp.playlist()
 PLAYLIST_CACHE_PATH = os.path.join(os.path.dirname(__file__), "playlist_cache.json")
@@ -321,6 +446,20 @@ def fetch_spotify_loop():
 
     while True:
         try:
+            # If we are currently blocked by a Spotify 429, wait until the retry window
+            with state_lock:
+                retry_until = state.get('retry_after_until', 0)
+            if retry_until and time.time() < retry_until:
+                remaining = retry_until - time.time()
+                try:
+                    print(f"Spotify rate limit active. Sleeping for {remaining:.1f}s")
+                except Exception:
+                    pass
+                # Wait interruptibly until either the timer elapses or poll_event is set
+                poll_event.wait(remaining)
+                # continue to top of loop to re-check state
+                continue
+
             # Use safe wrapper for current_playback to respect quota
             playback_call = safe_spotify_request(sp.current_playback)
             playback = None
@@ -412,12 +551,12 @@ def fetch_spotify_loop():
                         duration = max(1, float(state.get('duration_ms', 1)))
                         progress = float(state.get('progress_ms', 0))
                         time_left = max(0.0, (duration - progress) / 1000.0)
-                        if time_left > 30:
+                        # Elastic polling: use a fraction of remaining time but clamp to sensible bounds
+                        # Timeout = max(FAST_POLL_INTERVAL, min(60, time_left * 0.5))
+                        try:
+                            timeout = max(FAST_POLL_INTERVAL, min(60.0, time_left * 0.5))
+                        except Exception:
                             timeout = POLL_PLAYING_LONG
-                        elif time_left >= 10:
-                            timeout = POLL_PLAYING_MED
-                        else:
-                            timeout = POLL_PLAYING_SHORT
                     else:
                         timeout = POLL_IDLE
         except Exception:
@@ -435,28 +574,99 @@ def fetch_spotify_loop():
             fast_polls_remaining -= 1
 
 def get_weather():
-    global weather_cache
-    
+    global weather_cache, weather_refresh_in_progress
+
     now = time.time()
-    # Only update cache if it's been more than 20 minutes
-    if weather_cache["data"] is None or (now - weather_cache["timestamp"]) > WEATHER_UPDATE_INTERVAL:
+
+    # Quick return if cache is fresh
+    with weather_lock:
+        cached = weather_cache.get("data")
+        ts = weather_cache.get("timestamp", 0)
+
+    if cached is not None and (now - ts) <= WEATHER_UPDATE_INTERVAL:
+        return cached
+
+    # Helper to perform the actual fetch and update the cache
+    def _fetch_and_update():
+        nonlocal now
         try:
-            # Use configured city for wttr.in (encoded)
-            url = f"https://wttr.in/{WEATHER_CITY_ENCODED}?format=j1"
-            r = requests.get(url, timeout=5)
+            url = f"https://wttr.in/{WEATHER_CITY_ENCODED}?format=j1&lang=fr"
+            # Use configured session (with retries) if available
+            try:
+                r = WEATHER_SESSION.get(url, timeout=5)
+            except Exception:
+                # fallback to requests.get
+                r = requests.get(url, timeout=5)
             data = r.json()
-            current = data["current_condition"][0]
-            code = str(current["weatherCode"])
-            desc = WEATHER_FR.get(code, current["weatherDesc"][0]["value"])
-            weather_cache["data"] = {"temp": current["temp_C"], "desc": desc, "icon": code}
-            weather_cache["timestamp"] = now
-            print(f"Weather updated: {weather_cache['data']}")
+
+            # Normalize response shapes
+            current = None
+            if isinstance(data, dict):
+                if "current_condition" in data and isinstance(data["current_condition"], list) and data["current_condition"]:
+                    current = data["current_condition"][0]
+                elif "current" in data and data["current"]:
+                    current = data["current"]
+
+            if not current:
+                raise ValueError("Unexpected weather payload: missing current condition")
+
+            temp = current.get("temp_C") or current.get("FeelsLikeC") or "--"
+
+            # Extract description
+            desc = None
+            wdesc = current.get("weatherDesc") or current.get("lang_fr")
+            if isinstance(wdesc, list) and wdesc:
+                first = wdesc[0]
+                if isinstance(first, dict):
+                    desc = first.get("value") or str(first)
+                else:
+                    desc = str(first)
+            else:
+                desc = current.get("weatherDesc") or current.get("lang_fr") or "N/A"
+
+            code = current.get("weatherCode") or current.get("weathercode") or current.get("code") or "113"
+            code = str(code)
+
+            # Prefer French mapping from WEATHER_FR when available
+            fr_label = WEATHER_FR.get(code)
+            if fr_label:
+                desc = fr_label
+
+            with weather_lock:
+                weather_cache["data"] = {"temp": temp, "desc": desc, "icon": code}
+                weather_cache["timestamp"] = time.time()
         except Exception as e:
-            print(f"Weather error: {e}")
-            if weather_cache["data"] is None:
-                weather_cache["data"] = {"temp": "--", "desc": "N/A", "icon": "113"}
-    
-    return weather_cache["data"]
+            try:
+                print(f"Erreur météo : {e}")
+            except Exception:
+                pass
+            # If we have no cache, set a safe placeholder
+            with weather_lock:
+                if weather_cache.get("data") is None:
+                    weather_cache["data"] = {"temp": "--", "desc": "N/A", "icon": "113"}
+
+    # If no cached value, perform a blocking fetch (first-time startup)
+    if cached is None:
+        _fetch_and_update()
+        with weather_lock:
+            return weather_cache.get("data")
+
+    # If cached but stale, trigger a background refresh and return stale cache immediately
+    try:
+        if not weather_refresh_in_progress:
+            def _bg():
+                global weather_refresh_in_progress
+                try:
+                    weather_refresh_in_progress = True
+                    _fetch_and_update()
+                finally:
+                    weather_refresh_in_progress = False
+
+            threading.Thread(target=_bg, daemon=True).start()
+    except Exception:
+        pass
+
+    return cached
 
 @app.route("/")
 def index():
@@ -499,6 +709,9 @@ def stream():
                         "auto_sleep": True if dev_overrides.get("auto_sleep") is None else bool(dev_overrides.get("auto_sleep")),
                         "forced_sleep": False if dev_overrides.get("forced_sleep") is None else bool(dev_overrides.get("forced_sleep")),
                         "brightness": dev_overrides.get("brightness", None),
+                        # expose quota state to clients so the UI can show rate-limit messages
+                        "quota_exceeded": bool(state.get('quota_exceeded', False)),
+                        "retry_after": int(state.get('retry_after', 0)),
                     }
 
                     # Decide if this update should be sent:
@@ -515,6 +728,8 @@ def stream():
                             data["album"] != last_sent.get("album") or
                             data["context_name"] != last_sent.get("context_name") or
                             data["cover_url"] != last_sent.get("cover_url")
+                            or data.get('quota_exceeded') != last_sent.get('quota_exceeded')
+                            or data.get('retry_after') != last_sent.get('retry_after')
                         ):
                             send = True
                         else:
@@ -656,6 +871,44 @@ def dev_reset_weather():
         weather_cache["data"] = None
         weather_cache["timestamp"] = 0
     return jsonify({"ok": True})
+
+
+@app.route('/dev/simulate_429', methods=['POST'])
+def dev_simulate_429():
+    """Developer-only endpoint to simulate a Spotify 429 for testing (10s)."""
+    global retry_after_until
+    delay = 10
+    now = time.time()
+    with state_lock:
+        state['quota_exceeded'] = True
+        state['retry_after'] = delay
+        state['retry_after_until'] = now + delay
+    # Also update module-level variable for compatibility
+    retry_after_until = now + delay
+    # schedule clear of the simulated quota after `delay` seconds
+    def _clear_simulated():
+        try:
+            with state_lock:
+                state['quota_exceeded'] = False
+                state['retry_after'] = 0
+                state['retry_after_until'] = 0
+        except Exception:
+            pass
+        try:
+            poll_event.set()
+        except Exception:
+            pass
+
+    try:
+        threading.Timer(delay, _clear_simulated).start()
+    except Exception:
+        pass
+
+    try:
+        poll_event.set()
+    except Exception:
+        pass
+    return jsonify({"ok": True, "simulated": True, "retry_after": delay})
 
 
 @app.route("/dev/get_server_time")
