@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+quota_state.json
+playlist_cache.json
+*.bak
+.cache

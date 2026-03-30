@@ -1,0 +1,1369 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kiosk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root { --accent: #e94560; --text: #f0f0f0; --sub: rgba(255,255,255,0.45); --radius: 2.5vw; }
+
+    html, body {
+      width: 100vw; height: 100vh; overflow: hidden;
+      background: #0a0a14; color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      user-select: none; cursor: none;
+    }
+
+    #bg-blur {
+      position: fixed; inset: 0; z-index: 0;
+      background-size: cover; background-position: center;
+      filter: blur(8vw) brightness(0.3) saturate(1.8);
+      transform: scale(1.1);
+      transition: background-image 1.2s ease;
+    }
+    #bg-overlay {
+      position: fixed; inset: 0; z-index: 1;
+      background: radial-gradient(ellipse at 30% 50%, transparent 20%, rgba(5,5,15,0.75) 80%);
+    }
+
+    /* ── MODE VEILLE ── */
+    #sleep-screen {
+      position: fixed; inset: 0; z-index: 50;
+      background: #000;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 1;
+      pointer-events: all;
+      transition: opacity 0.8s ease;
+    }
+    #sleep-screen.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #sleep-clock { text-align: center; }
+    #sleep-time {
+      font-family: 'Syne', sans-serif;
+      font-size: 18vw; font-weight: 800;
+      letter-spacing: -0.5vw;
+      color: rgba(255,255,255,0.12);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    #sleep-date-text {
+      font-family: 'Syne', sans-serif;
+      font-size: 2.5vw;
+      font-weight: 700;
+      color: rgba(255,255,255,0.14);
+      margin-top: 1vw;
+      text-transform: capitalize;
+    }
+    #sleep-hint {
+      position: absolute; bottom: 4vh;
+      font-size: 1.2vw;
+      color: rgba(255,255,255,0.08);
+      letter-spacing: 0.2em; text-transform: uppercase;
+    }
+
+    /* ── LAYOUT ── */
+    #app {
+      position: relative; z-index: 2;
+      width: 100%; height: 100%;
+      display: grid;
+      grid-template-columns: 42vw 1fr;
+      grid-template-rows: 1fr auto;
+      padding: 5vw; padding-right: 8vw; gap: 4vw;
+      transition: opacity 0.8s ease;
+    }
+    #app.hidden { opacity: 0; pointer-events: none; }
+
+    #player {
+      grid-row: 1 / 3;
+      display: flex; flex-direction: column;
+      justify-content: center; gap: 3.5vh;
+    }
+
+    #cover-wrap { position: relative; width: 32vw; height: 32vw; flex-shrink: 0; }
+    #cover-glow {
+      position: absolute; inset: -3vw; border-radius: 4vw;
+      background-size: cover; background-position: center;
+      filter: blur(4vw) brightness(0.8) saturate(2); opacity: 0.7;
+      transition: background-image 1.2s ease;
+    }
+    #cover {
+      position: relative; width: 100%; height: 100%;
+      border-radius: var(--radius); object-fit: cover;
+      box-shadow: 0 3vw 6vw rgba(0,0,0,0.6);
+      transition: opacity 0.4s ease;
+    }
+    #cover.loading { opacity: 0; }
+
+    /* Developer overlays */
+    .dev-overlay { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.6); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+    .dev-overlay.show { opacity: 1; pointer-events: all; }
+    .dev-panel-box, .dev-pin-box, .dev-keypad-box { position: relative; background: linear-gradient(135deg, rgba(18,18,28,0.98), rgba(36,36,56,0.98)); border-radius: 1.5vw; padding: 2.5vw; min-width: 40vw; color: var(--text); box-shadow: 0 1vw 3vw rgba(0,0,0,0.6); overflow: hidden; }
+    .dev-pin-display { font-family: 'Syne', sans-serif; font-size: 3.5vw; letter-spacing: 0.6vw; margin: 1vw 0; text-align:center; }
+    .dev-keypad { display: grid; grid-template-columns: repeat(3, 6vw); gap: 1vw; justify-content: center; }
+    .dev-keypad button { font-size: 2.2vw; padding: 1.2vw 0; border-radius: 0.8vw; background: rgba(255,255,255,0.03); color: var(--text); border: 1px solid rgba(255,255,255,0.04); cursor:pointer; }
+    .dev-panel-actions { display:flex; gap:1vw; margin-bottom:1vw; flex-wrap:wrap; }
+    .dev-panel-actions button { padding: 0.8vw 1vw; border-radius: 0.8vw; cursor:pointer; }
+    .dev-section { display:flex; gap:0.8vw; flex-wrap:wrap; margin-top:1vw; }
+    /* Pretty admin buttons inspired by main UI */
+    .dev-small {
+      padding: 0.9vw 1.6vw; border-radius: 1vw; font-size: 1.6vw; cursor: pointer;
+      font-weight: 700; border: none; color: var(--text);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+      box-shadow: 0 0.6vw 1.6vw rgba(0,0,0,0.45); transition: transform .12s, box-shadow .12s;
+    }
+    .dev-small.primary {
+      background: linear-gradient(135deg, var(--accent), #ff6b7f);
+      color: white; box-shadow: 0 0.8vw 2vw rgba(233,69,96,0.22);
+    }
+    .dev-small.secondary {
+      background: rgba(255,255,255,0.03); color: var(--text); border: 1px solid rgba(255,255,255,0.06);
+    }
+    .dev-small:hover { transform: translateY(-0.15vw); box-shadow: 0 1vw 2.2vw rgba(0,0,0,0.5); }
+    .dev-hint { font-size:1.1vw; color:var(--sub); margin-top:0.8vw; text-align:center; }
+
+    /* Flash overlay for wrong PIN / invalid keypad */
+    .dev-panel-box::after, .dev-pin-box::after, .dev-keypad-box::after {
+      content: '';
+      position: absolute; inset: 0; border-radius: inherit;
+      background: rgba(232,75,75,0.92);
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.12s linear;
+    }
+    .dev-pin-box.flash-red::after, .dev-keypad-box.flash-red::after {
+      animation: flash-red 0.48s ease-in-out;
+    }
+
+    @keyframes flash-red {
+      0% { opacity: 0; }
+      10% { opacity: 0.95; }
+      30% { opacity: 0; }
+      55% { opacity: 0.95; }
+      100% { opacity: 0; }
+    }
+
+    /* Toast notifications */
+    #toasts { position: fixed; right: 1.2vw; bottom: 1.2vw; z-index: 140; display:flex; flex-direction:column; gap:0.8vw; align-items:flex-end; pointer-events: none; }
+    .toast { background: rgba(20,20,30,0.98); color: var(--text); padding: 0.8vw 1.2vw; border-radius: 0.8vw; box-shadow: 0 0.6vw 1.8vw rgba(0,0,0,0.5); opacity: 0; transform: translateY(6px); transition: opacity .2s, transform .2s; pointer-events: auto; min-width: 12vw; max-width: 40vw; font-size: 1.1vw; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { border-left: 4px solid #6be56b; }
+    .toast.error { border-left: 4px solid #ff6b6b; }
+
+    #track-title {
+      font-family: 'Syne', sans-serif; font-size: 4vw; font-weight: 800;
+      line-height: 1.05; max-width: 38vw;
+      display: block;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    #track-title.overflow {
+      text-overflow: initial;
+      mask-image: linear-gradient(90deg, transparent 0%, black 4%, black 96%, transparent 100%);
+    }
+    #track-title.overflow span {
+      display: inline-block;
+      will-change: transform;
+      transform: translateZ(0);
+    }
+    
+    #track-artist {
+      font-size: 2vw; font-weight: 300; color: var(--sub);
+      margin-top: 0.8vh; max-width: 38vw;
+      display: block;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    #track-artist.overflow {
+      text-overflow: initial;
+    }
+    #track-artist.overflow span {
+      display: inline-block;
+      will-change: transform;
+      transform: translateZ(0);
+    }
+    
+    #track-album {
+      font-size: 1.4vw; color: var(--accent); margin-top: 0.5vh;
+      opacity: 0.8; max-width: 38vw;
+      display: block;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    #track-album.overflow {
+      text-overflow: initial;
+    }
+    #track-album.overflow span {
+      display: inline-block;
+      will-change: transform;
+      transform: translateZ(0);
+    }
+
+    #progress-bar-wrap {
+      height: 0.5vh; background: rgba(255,255,255,0.12);
+      border-radius: 99px; cursor: pointer; position: relative;
+    }
+    #progress-fill {
+      height: 100%; border-radius: 99px;
+      background: linear-gradient(90deg, var(--accent), #ff8c69);
+      transition: width 0.15s linear; position: relative;
+    }
+    #progress-fill::after {
+      content: ''; position: absolute; right: -0.6vw; top: 50%;
+      transform: translateY(-50%); width: 1.2vw; height: 1.2vw;
+      border-radius: 50%; background: white;
+      box-shadow: 0 0 1vw rgba(255,255,255,0.5);
+      opacity: 0; transition: opacity 0.2s;
+    }
+    #progress-bar-wrap:hover #progress-fill::after { opacity: 1; }
+    #progress-times {
+      display: flex; justify-content: space-between;
+      font-size: 1.3vw; color: var(--sub); font-variant-numeric: tabular-nums;
+      margin-top: 1vh;
+    }
+
+    #controls { display: flex; align-items: center; gap: 3vw; margin-top: 1vh; }
+    .ctrl-btn {
+      background: none; border: none; color: var(--text); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform 0.15s, opacity 0.15s; opacity: 0.7;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .ctrl-btn:hover { opacity: 1; transform: scale(1.12); }
+    .ctrl-btn:active { transform: scale(0.92); }
+    .ctrl-btn svg { width: 3vw; height: 3vw; pointer-events: none; }
+    .ctrl-btn.main {
+      width: 7vw; height: 7vw; border-radius: 50%;
+      background: white; color: #111; opacity: 1;
+      box-shadow: 0 0.5vw 2vw rgba(255,255,255,0.2);
+    }
+    .ctrl-btn.main svg { width: 3.5vw; height: 3.5vw; }
+    .ctrl-btn.main:hover { transform: scale(1.08); }
+
+    #right-top {
+      display: flex; flex-direction: column;
+      justify-content: flex-start; align-items: flex-end; gap: 3vh; padding-top: 1vh; padding-right: 3vw;
+    }
+    #clock-time {
+      font-family: 'Syne', sans-serif; font-size: 11vw; font-weight: 800;
+      line-height: 1; letter-spacing: -0.3vw;
+      font-variant-numeric: tabular-nums; text-align: right;
+    }
+    #clock-date { font-size: 1.8vw; color: var(--sub); margin-top: 0.5vh; text-align: right; text-transform: capitalize; }
+
+    #weather-block {
+      display: flex; align-items: center; gap: 1.5vw;
+      background: rgba(255,255,255,0.06); backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 1.5vw; padding: 1.5vh 2.5vw;
+    }
+    #weather-icon { font-size: 4vw; line-height: 1; }
+    #weather-temp { font-family: 'Syne', sans-serif; font-size: 3.5vw; font-weight: 700; }
+    #weather-desc { font-size: 1.3vw; color: var(--sub); margin-top: 0.3vh; }
+
+    #right-bottom { display: flex; align-items: flex-end; justify-content: space-between; padding-right: 3vw; }
+    #sysinfo { display: flex; gap: 1.5vw; }
+    .sys-pill {
+      background: rgba(255,255,255,0.06); backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 1.2vw;
+      padding: 1.2vh 1.8vw; display: flex; flex-direction: column;
+      align-items: center; gap: 0.4vh; min-width: 8vw;
+    }
+    .sys-label { font-size: 1vw; color: var(--sub); text-transform: uppercase; letter-spacing: 0.1em; }
+    .sys-value { font-family: 'Syne', sans-serif; font-size: 2vw; font-weight: 700; }
+    .sys-value.low-battery { color: #ff4444; }
+    .sys-value.warn { color: #ffb347; }
+    .sys-value.danger { color: #ff4444; }
+
+    .battery-icon { width: 1.5vw; height: 1.5vw; display: flex; align-items: center; justify-content: center; }
+    .battery-icon .battery-bolt { fill: white; transition: fill .12s, opacity .12s; }
+    .battery-icon .battery-bolt.critical { fill: #ff4444; animation: bolt-flash 1s linear infinite; filter: drop-shadow(0 0 0.6vw #ff4444); }
+    @keyframes bolt-flash { 0% { opacity: 1; } 50% { opacity: 0.15; } 100% { opacity: 1; } }
+
+    #exit-btn:hover { background: rgba(255,255,255,0.12); color: var(--text); }
+    #exit-btn svg { width: 1.5vw; height: 1.5vw; }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(2vh); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    #player { animation: fadeUp 0.8s ease both; }
+    #right-top { animation: fadeUp 0.8s 0.15s ease both; }
+    #right-bottom { animation: fadeUp 0.8s 0.3s ease both; }
+
+    body.night-mode #bg-blur { filter: blur(8vw) brightness(0.1) saturate(0.5); }
+    body.night-mode #app { opacity: 0.35; }
+
+    /* ── POPUP QUITTER ── */
+    #exit-popup {
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(0,0,0,0.7); backdrop-filter: blur(5px);
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    #exit-popup.show {
+      opacity: 1; pointer-events: all;
+    }
+    .popup-content {
+      background: linear-gradient(135deg, rgba(20,20,30,0.95), rgba(40,40,60,0.95));
+      border: 1px solid rgba(233,69,96,0.3);
+      border-radius: 3vw; padding: 4vw;
+      text-align: center;
+      animation: popupSlideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+      min-width: 50vw;
+      backdrop-filter: blur(20px);
+    }
+    @keyframes popupSlideIn {
+      from { transform: scale(0.7) translateY(-20px); opacity: 0; }
+      to { transform: scale(1) translateY(0); opacity: 1; }
+    }
+    .popup-title {
+      font-family: 'Syne', sans-serif; font-size: 3.5vw; font-weight: 800;
+      color: var(--text); margin-bottom: 2vw;
+    }
+    .popup-buttons {
+      display: flex; gap: 2vw; justify-content: center;
+    }
+    .popup-btn {
+      flex: 1; padding: 1.5vh 2vw;
+      border: none; border-radius: 1.5vw;
+      font-family: 'Syne', sans-serif; font-size: 1.8vw; font-weight: 700;
+      cursor: pointer; transition: all 0.2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .popup-btn.yes {
+      background: linear-gradient(135deg, #e94560, #ff6b7f);
+      color: white;
+    }
+    .popup-btn.yes:hover { transform: scale(1.05); box-shadow: 0 0.5vw 2vw rgba(233,69,96,0.4); }
+    .popup-btn.no {
+      background: rgba(255,255,255,0.1); color: var(--text);
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    .popup-btn.no:hover { background: rgba(255,255,255,0.15); transform: scale(1.02); }
+    .popup-btn.reload {
+      background: rgba(100,200,255,0.2); color: #64c8ff;
+      border: 1px solid rgba(100,200,255,0.4);
+    }
+    .popup-btn.reload:hover { background: rgba(100,200,255,0.3); transform: scale(1.02); }
+
+    /* ── ZONE CLIC SECRET (COIN HAUT DROIT) ── */
+    #secret-zone {
+      position: fixed; top: 0; right: 0; z-index: 220;
+      width: 10vw; height: 10vh;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body data-dev-pin="{{ dev_pin|default('')|e }}">
+
+<div id="bg-blur"></div>
+<div id="bg-overlay"></div>
+
+<div id="secret-zone"></div>
+
+<div id="exit-popup">
+  <div class="popup-content">
+    <div class="popup-title">Voulez vous quitter ?</div>
+    <div class="popup-buttons">
+      <button class="popup-btn yes" onclick="confirmExit()">Oui</button>
+      <button class="popup-btn no" onclick="closePopup()">Non</button>
+      <button class="popup-btn reload" onclick="reloadKiosk()">Actualiser</button>
+    </div>
+  </div>
+</div>
+
+<!-- Dev PIN overlay -->
+<div id="dev-pin-overlay" class="dev-overlay" aria-hidden="true">
+  <div class="dev-pin-box">
+    <button onclick="closeDevPin()" class="dev-small" aria-label="Fermer" style="position:absolute;top:1vw;right:1vw;padding:0.6vw 0.9vw;font-size:1.6vw;">✕</button>
+    <div style="font-family:'Syne',sans-serif;font-size:2.2vw;font-weight:800;margin-bottom:0.8vw;">Code PIN requis</div>
+    <div id="dev-pin-display" class="dev-pin-display">----</div>
+    <div id="dev-pin-keypad" class="dev-keypad" style="margin-top:0.6vw;">
+      <button data-digit="1">1</button><button data-digit="2">2</button><button data-digit="3">3</button>
+      <button data-digit="4">4</button><button data-digit="5">5</button><button data-digit="6">6</button>
+      <button data-digit="7">7</button><button data-digit="8">8</button><button data-digit="9">9</button>
+      <button data-digit="bk">←</button><button data-digit="0">0</button><button data-digit="clr">C</button>
+    </div>
+    
+  </div>
+</div>
+
+<!-- Dev panel -->
+<div id="dev-panel" class="dev-overlay" aria-hidden="true">
+  <div class="dev-panel-box">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-family:'Syne',sans-serif;font-size:2.2vw;font-weight:800;">Developer Panel</div>
+      <button onclick="closeDevPanel()" class="dev-small">Fermer</button>
+    </div>
+    <div class="dev-panel-actions" style="margin-top:1vw;">
+      <button onclick="confirmExit()" class="dev-small">Quitter</button>
+      <button onclick="reloadKiosk()" class="dev-small">Actualiser</button>
+      <button onclick="devResetWeather()" class="dev-small">Reset météo</button>
+      <button onclick="devResetTime()" class="dev-small">Reset heure</button>
+      <button onclick="devReconnectSpotify()" class="dev-small">Reconnect Spotify</button>
+      <button onclick="devClearOverrides()" class="dev-small">Clear Overrides</button>
+    </div>
+    <div style="margin-top:1vw;">
+      <div style="font-weight:700;margin-bottom:0.6vw;">Veille & Luminosité</div>
+      <div class="dev-section">
+        <button id="btn-auto-sleep" onclick="toggleAutoSleep()" class="dev-small secondary">Veille Auto: ON</button>
+        <button id="btn-force-sleep" onclick="forceSleep()" class="dev-small primary">Forcer la veille</button>
+        <button id="btn-release-sleep" onclick="releaseForcedSleep()" class="dev-small">Relâcher veille</button>
+      </div>
+      <div style="margin-top:1vw;">
+        <div style="font-weight:700;margin-bottom:0.6vw;">Luminosité</div>
+        <div style="display:flex;align-items:center;gap:0.8vw;">
+          <input id="dev-brightness-slider" type="range" min="0" max="100" value="100" />
+          <div id="dev-brightness-value">auto</div>
+          <button onclick="resetBrightness()" class="dev-small">Reset</button>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:1.2vw;">
+      <div style="font-weight:700;margin-bottom:0.6vw;">Test - Modifier valeurs système</div>
+      <div class="dev-section">
+        <div style="display:flex;gap:0.6vw;align-items:center;">
+          <button onclick="openNumericKeypad('battery')" class="dev-small primary">Set Batterie</button>
+        </div>
+        <div style="display:flex;gap:0.6vw;align-items:center;">
+          <button onclick="openNumericKeypad('ram')" class="dev-small primary">Set RAM</button>
+        </div>
+        <div style="display:flex;gap:0.6vw;align-items:center;">
+          <button onclick="openNumericKeypad('cpu')" class="dev-small primary">Set CPU</button>
+        </div>
+        
+      </div>
+      
+    </div>
+  </div>
+</div>
+
+<!-- Numeric keypad for custom values -->
+<div id="dev-keypad-overlay" class="dev-overlay" aria-hidden="true">
+  <div class="dev-keypad-box">
+    <div id="dev-keypad-title" style="font-family:'Syne',sans-serif;font-size:2vw;font-weight:700;margin-bottom:0.8vw;">Valeur</div>
+    <div id="dev-keypad-display" class="dev-pin-display">0</div>
+    <div id="dev-keypad" class="dev-keypad" style="margin-top:0.6vw;">
+      <button data-digit="1">1</button><button data-digit="2">2</button><button data-digit="3">3</button>
+      <button data-digit="4">4</button><button data-digit="5">5</button><button data-digit="6">6</button>
+      <button data-digit="7">7</button><button data-digit="8">8</button><button data-digit="9">9</button>
+      <button data-digit="bk">←</button><button data-digit="0">0</button><button data-digit="clr">C</button>
+    </div>
+    <div style="display:flex;gap:0.8vw;margin-top:1vw;justify-content:center;">
+      <button onclick="confirmNumericKeypad()" class="dev-small primary">OK</button>
+      <button onclick="closeNumericKeypad()" class="dev-small">Annuler</button>
+    </div>
+  </div>
+</div>
+
+<div id="sleep-screen">
+  <div id="sleep-clock">
+    <div id="sleep-time">00:00</div>
+    <div id="sleep-date-text"></div>
+  </div>
+  <div id="sleep-hint">Toucher pour réveiller</div>
+</div>
+
+<div id="app" class="hidden">
+  <section id="player">
+    <div id="cover-wrap">
+      <div id="cover-glow"></div>
+      <img id="cover" src="" alt="cover">
+    </div>
+    <div id="track-info">
+      <div id="track-title">—</div>
+      <div id="track-artist">—</div>
+      <div id="track-album"></div>
+    </div>
+    <div id="progress-section">
+      <div id="progress-bar-wrap">
+        <div id="progress-fill" style="width:0%"></div>
+      </div>
+      <div id="progress-times">
+        <span id="time-current">0:00</span>
+        <span id="time-total">0:00</span>
+      </div>
+    </div>
+    <div id="controls">
+      <button class="ctrl-btn" onclick="ctrl('prev')">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+      </button>
+      <button class="ctrl-btn main" id="btn-playpause" onclick="togglePlay()">
+        <svg id="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="icon-pause" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+      </button>
+      <button class="ctrl-btn" onclick="ctrl('next')">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <section id="right-top">
+    <div>
+      <div id="clock-time">00:00</div>
+      <div id="clock-date"></div>
+    </div>
+    <div id="weather-block">
+      <div id="weather-icon">🌤</div>
+      <div>
+        <div id="weather-temp">--°</div>
+        <div id="weather-desc">Chargement…</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="right-bottom">
+    <div id="sysinfo">
+      <div class="sys-pill">
+        <span class="sys-label">CPU</span>
+        <span class="sys-value" id="sys-cpu">--%</span>
+      </div>
+      <div class="sys-pill">
+        <span class="sys-label">RAM</span>
+        <span class="sys-value" id="sys-ram">--%</span>
+      </div>
+      
+      <div class="sys-pill" id="battery-pill">
+        <span class="sys-label">Batterie</span>
+        <div style="display: flex; align-items: center; gap: 0.2vw;">
+          <span class="battery-icon" id="battery-icon"></span>
+          <span class="sys-value" id="sys-bat">--%</span>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+  let currentTrackId = null;
+  let isPlaying = false;
+  let pausedByUser = false;  // true = pause volontaire depuis CE display
+  let isSleeping = true;
+  let wasJustWokenUp = false; // empêche veille immédiate après réveil
+  let pauseFromDisplay = false; // true si on a appuyé sur pause depuis CE display
+  let pauseProtected = false; // protège pauseFromDisplay pendant 2s après avoir cliqué
+  let pauseTimeoutId = null; // timeout qui remet veille en veille après 10s pause
+  // Developer panel / PIN (loaded from server via template variable)
+  let devEnteredPin = '';
+  // Read PIN from a data-attribute to avoid template syntax inside JS (editor/linter friendly)
+  const DEV_PIN = document.body.getAttribute("data-dev-pin") || null;
+  let devKeypadTarget = null;
+  let devTimeOffsetMs = 0;
+  // Helper to call dev endpoints with the configured DEV_PIN (if present)
+  function devFetch(url, opts) {
+    opts = opts || {};
+    // clone/normalize headers so we don't mutate caller objects
+    const hdrs = Object.assign({}, opts.headers || {});
+    if (DEV_PIN) hdrs['X-DEV-PIN'] = DEV_PIN;
+    opts.headers = hdrs;
+    return fetch(url, opts);
+  }
+  // Dev-controlled states
+  let forcedSleepActive = false;
+  let autoSleepEnabled = true;
+  let devBrightness = null;
+  // Local interpolation state (client-side) — advances UI every 100ms
+  let localProgressMs = 0;
+  let localDurationMs = 1;
+  let progressIntervalId = null;
+
+  function startLocalProgress() {
+    if (progressIntervalId) return;
+    progressIntervalId = setInterval(() => {
+      if (!isPlaying) return;
+      localProgressMs = Math.min(localProgressMs + 100, localDurationMs);
+      const pct = (localDurationMs > 0) ? (localProgressMs / localDurationMs) * 100 : 0;
+      const progressFill = document.getElementById('progress-fill');
+      if (progressFill) progressFill.style.width = `${pct}%`;
+      const timeCurrent = document.getElementById('time-current');
+      if (timeCurrent) timeCurrent.textContent = fmt(localProgressMs);
+    }, 100);
+  }
+
+  function stopLocalProgress() {
+    if (!progressIntervalId) return;
+    clearInterval(progressIntervalId);
+    progressIntervalId = null;
+  }
+
+  // Toast notification helper
+  function showToast(msg, type = 'success', timeout = 4000) {
+    const container = document.getElementById('toasts');
+    if (!container) return console.log(msg);
+    const t = document.createElement('div');
+    t.className = 'toast ' + (type || '');
+    t.textContent = msg;
+    container.appendChild(t);
+    // animate in
+    requestAnimationFrame(() => t.classList.add('show'));
+    // click to dismiss
+    t.addEventListener('click', () => {
+      t.classList.remove('show');
+      setTimeout(() => t.remove(), 220);
+    });
+    // auto remove
+    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 220); }, timeout);
+  }
+
+  // DOM elements will be wired after DOMContentLoaded to avoid null refs during static analysis
+  let sleepScreen;
+  let appEl;
+
+  function goSleep() {
+    if (isSleeping) return;
+    isSleeping = true;
+    sleepScreen = sleepScreen || document.getElementById('sleep-screen');
+    appEl = appEl || document.getElementById('app');
+    if (sleepScreen && sleepScreen.classList) sleepScreen.classList.remove('hidden');
+    if (appEl && appEl.classList) appEl.classList.add('hidden');
+    pauseFromDisplay = false; // réinitialiser quand on dort
+
+    // Hide the touch-to-wake hint only when forced sleep is active
+    const hintEl = document.getElementById('sleep-hint');
+    if (hintEl) {
+      hintEl.style.display = forcedSleepActive ? 'none' : '';
+    }
+  }
+
+
+  function wakeUp() {
+    if (!isSleeping) return;
+    wasJustWokenUp = true;
+    isSleeping = false;
+    sleepScreen = sleepScreen || document.getElementById('sleep-screen');
+    appEl = appEl || document.getElementById('app');
+    if (sleepScreen && sleepScreen.classList) sleepScreen.classList.add('hidden');
+    if (appEl && appEl.classList) appEl.classList.remove('hidden');
+    pauseFromDisplay = false; // réinitialiser pour être en sync avec Spotify
+    // Mettre à jour les icônes selon l'état actuel connu
+    const iconPlayEl = document.getElementById('icon-play');
+    const iconPauseEl = document.getElementById('icon-pause');
+    if (iconPlayEl && iconPauseEl) {
+      if (isPlaying) {
+        iconPlayEl.style.display = 'none';
+        iconPauseEl.style.display = '';
+      } else {
+        iconPlayEl.style.display = '';
+        iconPauseEl.style.display = 'none';
+      }
+    }
+    // Protection 10s : empêche la veille immédiate après réveil
+    setTimeout(() => { wasJustWokenUp = false; }, 10000);
+  }
+
+  // Toucher l'écran de veille = réveil (sûr si élément manquant)
+  (function(){
+    const _sleepScreen = document.getElementById('sleep-screen');
+    if (!_sleepScreen) return;
+    _sleepScreen.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (forcedSleepActive) return; // locked by dev forced-sleep
+      wakeUp();
+    });
+  })();
+
+  // ── HORLOGE ──
+  const DAYS = ['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
+  const MONTHS = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
+
+  function updateClock() {
+    const now = new Date(Date.now() + (devTimeOffsetMs || 0));
+    const h = String(now.getHours()).padStart(2,'0');
+    const m = String(now.getMinutes()).padStart(2,'0');
+    const timeStr = `${h}:${m}`;
+    const dateStr = `${DAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]}`;
+    document.getElementById('clock-time').textContent = timeStr;
+    document.getElementById('clock-date').textContent = dateStr;
+    document.getElementById('sleep-time').textContent = timeStr;
+    document.getElementById('sleep-date-text').textContent = dateStr;
+    const hour = now.getHours();
+    document.body.classList.toggle('night-mode', hour >= 0 && hour < 8);
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  // ── MÉTÉO ──
+  function updateWeather() {
+    fetch('/weather').then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }).then(d => {
+      document.getElementById('weather-temp').textContent = `${d.temp}°`;
+      document.getElementById('weather-desc').textContent = d.desc;
+      const code = parseInt(d.icon);
+      let icon = '🌤';
+      if (code === 113) icon = '☀️';
+      else if ([116,119,122].includes(code)) icon = '☁️';
+      else if ([176,263,266,293,296,299,302,305,308].includes(code)) icon = '🌧';
+      else if ([227,230,323,326,329,332,335,338,368,371].includes(code)) icon = '❄️';
+      else if ([200,386,389].includes(code)) icon = '⛈';
+      else if ([143,248,260].includes(code)) icon = '🌫';
+      document.getElementById('weather-icon').textContent = icon;
+    }).catch(err => {
+      console.error('Météo erreur:', err);
+    });
+  }
+  updateWeather();
+  setInterval(updateWeather, 5 * 60 * 1000);
+
+  // ── SYSINFO ──
+  function updateSysinfo() {
+    fetch('/sysinfo').then(r => r.json()).then(d => {
+      const cpuEl = document.getElementById('sys-cpu');
+      const ramEl = document.getElementById('sys-ram');
+      const cpuVal = Math.round(d.cpu);
+      const ramVal = Math.round(d.ram);
+      cpuEl.textContent = `${cpuVal}%`;
+      ramEl.textContent = `${ramVal}%`;
+
+      // Reset classes
+      cpuEl.classList.remove('warn','danger');
+      ramEl.classList.remove('warn','danger');
+
+      // CPU / RAM thresholds: >=90% red, >=80% orange
+      if (cpuVal >= 90) cpuEl.classList.add('danger');
+      else if (cpuVal >= 80) cpuEl.classList.add('warn');
+
+      if (ramVal >= 90) ramEl.classList.add('danger');
+      else if (ramVal >= 80) ramEl.classList.add('warn');
+
+      if (d.battery !== null) {
+        const batPercent = Math.round(d.battery);
+        const batElement = document.getElementById('sys-bat');
+        const iconElement = document.getElementById('battery-icon');
+        const batteryPill = document.getElementById('battery-pill');
+
+        batElement.textContent = `${batPercent}%`;
+        batElement.classList.remove('warn','danger','low-battery');
+        batteryPill.classList.remove('battery-warn','battery-critical');
+        iconElement.innerHTML = '';
+
+        // Batterie: <=10% -> rouge (critique), <=20% -> orange (alerte)
+        if (batPercent <= 10) {
+          batElement.classList.add('danger');
+          batteryPill.classList.add('battery-critical');
+          // afficher un éclair rouge clignotant (même si non branché)
+          iconElement.innerHTML = `<svg class="battery-bolt critical" viewBox="0 0 24 24" style="width: 100%; height: 100%;"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`;
+        } else if (batPercent <= 20) {
+          batElement.classList.add('warn');
+          batteryPill.classList.add('battery-warn');
+          if (d.plugged) {
+            iconElement.innerHTML = `<svg class="battery-bolt" viewBox="0 0 24 24" style="width: 100%; height: 100%;"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`;
+          } else {
+            iconElement.innerHTML = '';
+          }
+        } else {
+          if (d.plugged) {
+            iconElement.innerHTML = `<svg class="battery-bolt" viewBox="0 0 24 24" style="width: 100%; height: 100%;"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`;
+          } else {
+            iconElement.innerHTML = '';
+          }
+        }
+
+        batteryPill.style.display = '';
+      } else {
+        document.getElementById('battery-pill').style.display = 'none';
+      }
+    }).catch(() => {});
+  }
+  updateSysinfo();
+  setInterval(updateSysinfo, 3000);
+
+  function fmt(ms) {
+    const s = Math.floor(ms / 1000);
+    return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  }
+
+  // ── INFINITE SCROLL ANIMATION ──
+  const scrollAnimations = new Map();
+
+  function startInfiniteScroll(element, speedSec, originalText) {
+    if (!element) return;
+    const span = element.querySelector('span');
+    if (!span) return;
+
+    const animation = {
+      element,
+      span,
+      offset: 0,
+      speed: 0,
+      singleCopyWidth: 0,
+      animationId: null
+    };
+
+    requestAnimationFrame(() => {
+      // Mesurer la largeur d'UNE COPIE exactement: texte + gap
+      const tempSpan = document.createElement('span');
+      tempSpan.style.visibility = 'hidden';
+      tempSpan.style.position = 'fixed';
+      tempSpan.style.whiteSpace = 'nowrap';
+      tempSpan.style.top = '-9999px';
+      tempSpan.style.fontSize = window.getComputedStyle(span).fontSize;
+      tempSpan.style.fontFamily = window.getComputedStyle(span).fontFamily;
+      tempSpan.style.fontWeight = window.getComputedStyle(span).fontWeight;
+      
+      const megaGap = '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
+      tempSpan.innerHTML = `${originalText}${megaGap}`;
+      document.body.appendChild(tempSpan);
+      
+      animation.singleCopyWidth = tempSpan.offsetWidth;
+      document.body.removeChild(tempSpan);
+      
+      if (animation.singleCopyWidth > 0) {
+        span.style.transform = 'translateX(0)';
+        animation.speed = animation.singleCopyWidth / (speedSec * 1000);
+        
+        function animate() {
+          if (!scrollAnimations.has(element.id)) return;
+          
+          animation.offset += animation.speed * 16;
+          
+          // Reset quand on a scrollé une copie complète
+          if (animation.offset >= animation.singleCopyWidth) {
+            animation.offset -= animation.singleCopyWidth;
+          }
+          
+          span.style.transform = `translateX(-${animation.offset}px)`;
+          animation.animationId = requestAnimationFrame(animate);
+        }
+        
+        animation.animationId = requestAnimationFrame(animate);
+      }
+    });
+
+    scrollAnimations.set(element.id, animation);
+  }
+
+  function stopInfiniteScroll(element) {
+    const animation = scrollAnimations.get(element.id);
+    if (animation && animation.animationId) {
+      cancelAnimationFrame(animation.animationId);
+      animation.animationId = null;
+    }
+    scrollAnimations.delete(element.id);
+  }
+
+  // ── SSE SPOTIFY + FAKE PROGRESS BAR ──
+  let currentDurationMs = 1;
+  let evtSource = null;
+
+  // extract handler so we can attach the EventSource after DOM is ready
+  function handleStreamMessage(e) {
+    const d = JSON.parse(e.data);
+
+    // --- Apply dev overrides coming from server SSE ---
+    if (typeof d.auto_sleep !== 'undefined') {
+      autoSleepEnabled = !!d.auto_sleep;
+      const btn = document.getElementById('btn-auto-sleep');
+      if (btn) btn.textContent = 'Veille Auto: ' + (autoSleepEnabled ? 'ON' : 'OFF');
+    }
+    if (typeof d.brightness !== 'undefined') {
+      devBrightness = d.brightness === null ? null : d.brightness;
+      const valEl = document.getElementById('dev-brightness-value');
+      const slider = document.getElementById('dev-brightness-slider');
+      if (valEl) valEl.textContent = devBrightness === null ? 'auto' : `${Math.round(devBrightness)}%`;
+      if (slider && devBrightness !== null) slider.value = devBrightness;
+      applyBrightness();
+    }
+    if (typeof d.forced_sleep !== 'undefined') {
+      const newForced = !!d.forced_sleep;
+      if (newForced && !forcedSleepActive) {
+        forcedSleepActive = true;
+        goSleep();
+      } else if (!newForced && forcedSleepActive) {
+        forcedSleepActive = false;
+        // When forced sleep is released remotely, show the touch hint so users can wake
+        const hintEl = document.getElementById('sleep-hint');
+        if (hintEl) hintEl.style.display = '';
+      }
+    }
+
+    // If forced sleep is active, ignore playback updates entirely
+    if (forcedSleepActive) return;
+
+    // Aucune musique du tout
+    if (!d.track_id) {
+      if (!isSleeping && !wasJustWokenUp && autoSleepEnabled) goSleep();
+      return;
+    }
+
+    // Musique en pause
+    if (!d.is_playing) {
+      // Ne mettre à jour que si pas en mode protection
+      if (!pauseProtected) {
+        if (pauseFromDisplay) {
+          // Pause volontaire depuis CE display → on reste affiché, juste icône
+          isPlaying = false;
+          document.getElementById('icon-play').style.display = '';
+          document.getElementById('icon-pause').style.display = 'none';
+        } else {
+          // Pause depuis un autre appareil → mettre à jour l'icône et veille (si activée)
+          isPlaying = false;
+          document.getElementById('icon-play').style.display = '';
+          document.getElementById('icon-pause').style.display = 'none';
+          if (!isSleeping && !wasJustWokenUp && autoSleepEnabled) goSleep();
+        }
+      }
+      return;
+    }
+
+    // Musique qui joue → réveil si en veille, et on réinitialise les flags
+    if (!pauseProtected) pauseFromDisplay = false;
+    if (isSleeping) wakeUp();
+
+    // Nouvelle piste
+    if (d.track_id !== currentTrackId) {
+      currentTrackId = d.track_id;
+      document.getElementById('bg-blur').style.backgroundImage = `url('${d.cover_url}')`;
+      document.getElementById('cover-glow').style.backgroundImage = `url('${d.cover_url}')`;
+      const img = document.getElementById('cover');
+      img.classList.add('loading');
+      setTimeout(() => {
+        img.src = d.cover_url;
+        img.onload = () => img.classList.remove('loading');
+      }, 300);
+      
+      // Update titles avec détection overflow pour animation scroll
+      const titleEl = document.getElementById('track-title');
+      const artistEl = document.getElementById('track-artist');
+      const albumEl = document.getElementById('track-album');
+      
+      titleEl.textContent = d.title;
+      artistEl.textContent = d.artist;
+      // Afficher le nom de la playlist si disponible, sinon l'album
+      albumEl.textContent = d.context_name || d.album;
+      
+      // Vérifier overflow et ajouter animation si nécessaire
+      setTimeout(() => {
+        [titleEl, artistEl, albumEl].forEach((el, idx) => {
+          const wrapper = el.querySelector('span');
+          if (wrapper) wrapper.remove(); // Nettoyer ancien wrapper
+          
+          if (el.scrollWidth > el.clientWidth) {
+            el.classList.add('overflow');
+            // 2 copies pour voir distinctement le gap et la boucle infinie
+            const text = el.textContent;
+            const megaGap = '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;'; // 10 nbsp
+            el.innerHTML = `<span>${text}${megaGap}${text}</span>`;
+            
+            // Vitesses différentes pour éviter monotonie
+            const speeds = [20, 23, 26]; // secondes
+            stopInfiniteScroll(el);
+            startInfiniteScroll(el, speeds[idx], text);
+          } else {
+            el.classList.remove('overflow');
+            el.innerHTML = el.textContent;
+            stopInfiniteScroll(el);
+          }
+        });
+      }, 100);
+      
+      document.getElementById('time-total').textContent = fmt(d.duration_ms);
+      document.getElementById('time-total').dataset.ms = d.duration_ms;
+    }
+
+    // FAKE PROGRESS BAR: client-side interpolation
+    currentDurationMs = d.duration_ms;
+    const timeCurrent = document.getElementById('time-current');
+    const newTime = fmt(d.progress_ms);
+    if (timeCurrent && timeCurrent.textContent !== newTime) timeCurrent.textContent = newTime;
+
+    // Handle playback state and start/stop local interval
+    if (d.is_playing) {
+      // start local interval if not running
+      if (!progressIntervalId) {
+        localProgressMs = d.progress_ms;
+        localDurationMs = d.duration_ms;
+        startLocalProgress();
+      } else {
+        // recenter silently if backend differs by >2s
+        const diff = Math.abs(d.progress_ms - localProgressMs);
+        if (diff > 2000) {
+          localProgressMs = d.progress_ms;
+          localDurationMs = d.duration_ms;
+        }
+      }
+      if (!pauseProtected) {
+        isPlaying = true;
+        document.getElementById('icon-play').style.display = 'none';
+        document.getElementById('icon-pause').style.display = '';
+      }
+    } else {
+      // paused or no playback
+      stopLocalProgress();
+      localProgressMs = d.progress_ms;
+      localDurationMs = d.duration_ms;
+      const pct = (localDurationMs > 0) ? (localProgressMs / localDurationMs) * 100 : 0;
+      const progressFill = document.getElementById('progress-fill');
+      if (progressFill) progressFill.style.width = `${pct}%`;
+      if (!pauseProtected) {
+        isPlaying = false;
+        document.getElementById('icon-play').style.display = '';
+        document.getElementById('icon-pause').style.display = 'none';
+      }
+    }
+  }
+
+  // Progress is now driven locally by startLocalProgress()/stopLocalProgress()
+
+  // ── CONTRÔLES ──
+  function ctrl(action) {
+    fetch(`/control/${action}`, { method: 'POST' });
+  }
+
+  function togglePlay() {
+    if (isPlaying) {
+      // MISE EN PAUSE
+      pauseFromDisplay = true;  // on marque que C'EST NOUS qui pausons depuis ce display
+      pauseProtected = true;    // protection 2s pour ne pas réinitialiser pauseFromDisplay
+      
+      // Clear ancien timeout si existe
+      if (pauseTimeoutId) clearTimeout(pauseTimeoutId);
+      // Après 10s, réinitialiser pauseFromDisplay pour permettre mise en veille
+      pauseTimeoutId = setTimeout(() => {
+        pauseFromDisplay = false;
+      }, 10000);
+      
+      ctrl('pause');
+      isPlaying = false;
+      document.getElementById('icon-play').style.display = '';
+      document.getElementById('icon-pause').style.display = 'none';
+      // Après 2s, arrêter la protection
+      setTimeout(() => { pauseProtected = false; }, 2000);
+    } else {
+      // REPRISE DE LECTURE
+      pauseFromDisplay = false;
+      pauseProtected = true;    // protection 2s lors de la reprise aussi
+      
+      // Clear ancien timeout
+      if (pauseTimeoutId) clearTimeout(pauseTimeoutId);
+      pauseTimeoutId = null;
+      
+      ctrl('play');
+      isPlaying = true;
+      document.getElementById('icon-play').style.display = 'none';
+      document.getElementById('icon-pause').style.display = '';
+      // Après 2s, arrêter la protection
+      setTimeout(() => { pauseProtected = false; }, 2000);
+    }
+  }
+
+  (function(){
+    const _progressWrap = document.getElementById('progress-bar-wrap');
+    if (!_progressWrap) return;
+    _progressWrap.addEventListener('click', (e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const pct = (e.clientX - rect.left) / rect.width;
+      const totalMs = parseInt(document.getElementById('time-total').dataset.ms || 0);
+      const target = Math.floor(pct * totalMs);
+      // immediate local feedback
+      localProgressMs = target;
+      localDurationMs = totalMs || 1;
+      const progressFill = document.getElementById('progress-fill');
+      if (progressFill) progressFill.style.width = `${(localProgressMs / localDurationMs) * 100}%`;
+      const timeCurrent = document.getElementById('time-current');
+      if (timeCurrent) timeCurrent.textContent = fmt(localProgressMs);
+      ctrl(`seek/${target}`);
+    });
+  })();
+
+  // ── ZONE SECRÈTE (5 CLICS COIN HAUT DROIT) ──
+  let secretClicks = 0;
+  let secretClickTimeout = null;
+
+  (function(){
+    const _secretZone = document.getElementById('secret-zone');
+    if (!_secretZone) return;
+    _secretZone.addEventListener('click', () => {
+      secretClicks++;
+      clearTimeout(secretClickTimeout);
+      secretClickTimeout = setTimeout(() => { secretClicks = 0; }, 3000);
+      if (secretClicks === 5) {
+        openDevPin();
+        secretClicks = 0;
+      }
+    });
+  })();
+
+  // Dev PIN + panel logic
+  function openDevPin() {
+    devEnteredPin = '';
+    updatePinDisplay();
+    document.getElementById('dev-pin-overlay').classList.add('show');
+  }
+  function closeDevPin() {
+    document.getElementById('dev-pin-overlay').classList.remove('show');
+  }
+  function updatePinDisplay() {
+    const disp = document.getElementById('dev-pin-display');
+    let txt = devEnteredPin.padEnd(4, '-').slice(0,4);
+    let masked = txt.replace(/./g, (c,i) => i < devEnteredPin.length ? '●' : '-');
+    disp.textContent = masked;
+  }
+  document.querySelectorAll('#dev-pin-keypad button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const d = btn.dataset.digit;
+      if (d === 'bk') devEnteredPin = devEnteredPin.slice(0,-1);
+      else if (d === 'clr') devEnteredPin = '';
+      else if (devEnteredPin.length < 4) devEnteredPin += d;
+      updatePinDisplay();
+      if (devEnteredPin.length === 4) {
+        if (devEnteredPin === DEV_PIN) {
+          closeDevPin();
+          showDevPanel();
+        } else {
+          const box = document.querySelector('.dev-pin-box');
+          if (box) {
+            box.classList.remove('flash-red');
+            // trigger animation
+            void box.offsetWidth;
+            box.classList.add('flash-red');
+            setTimeout(() => box.classList.remove('flash-red'), 520);
+          }
+          devEnteredPin = '';
+          updatePinDisplay();
+        }
+      }
+    });
+  });
+
+  function showDevPanel() {
+    document.getElementById('dev-panel').classList.add('show');
+  }
+  function closeDevPanel() {
+    document.getElementById('dev-panel').classList.remove('show');
+  }
+
+  // Numeric keypad for sysinfo overrides
+  let devKeypadValue = '0';
+  function openNumericKeypad(target) {
+    devKeypadTarget = target;
+    devKeypadValue = '0';
+    document.getElementById('dev-keypad-title').textContent = 'Valeur: ' + target;
+    document.getElementById('dev-keypad-display').textContent = devKeypadValue;
+    document.getElementById('dev-keypad-overlay').classList.add('show');
+  }
+  function closeNumericKeypad() {
+    document.getElementById('dev-keypad-overlay').classList.remove('show');
+    devKeypadTarget = null;
+  }
+  document.querySelectorAll('#dev-keypad button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const d = btn.dataset.digit;
+      const keypadBox = document.querySelector('.dev-keypad-box');
+      if (d === 'bk') {
+        devKeypadValue = devKeypadValue.length > 1 ? devKeypadValue.slice(0,-1) : '0';
+      } else if (d === 'clr') {
+        devKeypadValue = '0';
+      } else {
+        let next = (devKeypadValue === '0') ? d : (devKeypadValue + d);
+        let num = parseInt(next, 10);
+        if (isNaN(num)) num = 0;
+        if (num > 100) {
+          if (keypadBox) {
+            keypadBox.classList.remove('flash-red');
+            void keypadBox.offsetWidth;
+            keypadBox.classList.add('flash-red');
+            setTimeout(() => keypadBox.classList.remove('flash-red'), 520);
+          }
+          return;
+        }
+        if (next.length <= 3) devKeypadValue = next;
+      }
+      document.getElementById('dev-keypad-display').textContent = devKeypadValue;
+    });
+  });
+
+  function confirmNumericKeypad() {
+    const val = Math.max(0, Math.min(100, parseInt(devKeypadValue || '0', 10)));
+    const payload = {};
+    payload[devKeypadTarget] = val;
+    devFetch('/dev/set_sysinfo', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+      .then(r => r.json()).then(j => {
+        showToast('Override appliqué', 'success');
+        closeNumericKeypad();
+        updateSysinfo();
+      }).catch(err => showToast('Erreur: ' + err, 'error'));
+  }
+
+  // Dev actions
+  function devResetWeather() {
+    devFetch('/dev/reset_weather', {method:'POST'}).then(()=> { updateWeather(); showToast('Météo réinitialisée', 'success'); }).catch(()=> showToast('Erreur reset météo','error'));
+  }
+  function devResetTime() {
+    devFetch('/dev/get_server_time').then(r=>r.json()).then(j => {
+      devTimeOffsetMs = j.server_time - Date.now();
+      updateClock();
+      showToast('Heure synchronisée au serveur', 'success');
+    });
+  }
+  function devClearOverrides() {
+    devFetch('/dev/clear_overrides', {method:'POST'}).then(()=> { updateSysinfo(); showToast('Overrides cleared', 'success'); }).catch(()=> showToast('Erreur','error'));
+  }
+  function devReconnectSpotify() {
+    devFetch('/dev/reconnect_spotify', {method:'POST'}).then(r=>r.json()).then(j=> {
+      if (j.ok) showToast('Reconnect Spotify OK', 'success');
+      else showToast('Reconnect failed: ' + (j.error || JSON.stringify(j)), 'error');
+    }).catch(e=> showToast('Erreur reconnect','error'));
+  }
+
+  // Apply brightness override (if set) or use default CSS behavior
+  function applyBrightness() {
+    const bg = document.getElementById('bg-blur');
+    const glow = document.getElementById('cover-glow');
+    const app = document.getElementById('app');
+    if (!bg || !glow || !app) return;
+    if (devBrightness === null || typeof devBrightness === 'undefined') {
+      // revert to CSS controlled brightness (including night-mode)
+      bg.style.filter = '';
+      glow.style.filter = '';
+      app.style.opacity = '';
+    } else {
+      const v = Math.max(0, Math.min(100, Number(devBrightness)));
+      const b = v / 100;
+      bg.style.filter = `blur(8vw) brightness(${b}) saturate(1.8)`;
+      glow.style.filter = `blur(4vw) brightness(${Math.max(0.3, b)}) saturate(2)`;
+      // tweak app opacity slightly with brightness
+      app.style.opacity = `${Math.max(0.25, 0.4 + (b * 0.6))}`;
+    }
+    const valEl = document.getElementById('dev-brightness-value');
+    if (valEl) valEl.textContent = devBrightness === null ? 'auto' : `${Math.round(devBrightness)}%`;
+  }
+
+  function fetchDevSettings() {
+    devFetch('/dev/get_dev_overrides').then(r => r.json()).then(j => {
+      autoSleepEnabled = !!j.auto_sleep;
+      forcedSleepActive = !!j.forced_sleep;
+      devBrightness = j.brightness === null ? null : j.brightness;
+
+      const btn = document.getElementById('btn-auto-sleep');
+      if (btn) btn.textContent = 'Veille Auto: ' + (autoSleepEnabled ? 'ON' : 'OFF');
+
+      const fbtn = document.getElementById('btn-force-sleep');
+      const rbtn = document.getElementById('btn-release-sleep');
+      if (forcedSleepActive) {
+        if (fbtn) fbtn.disabled = true;
+        if (rbtn) rbtn.disabled = false;
+        goSleep();
+      } else {
+        if (fbtn) fbtn.disabled = false;
+        if (rbtn) rbtn.disabled = true;
+      }
+
+      // Ensure the sleep hint visibility matches forced sleep state
+      const hintEl = document.getElementById('sleep-hint');
+      if (hintEl) hintEl.style.display = forcedSleepActive ? 'none' : '';
+
+      const slider = document.getElementById('dev-brightness-slider');
+      const valEl = document.getElementById('dev-brightness-value');
+      if (devBrightness === null) {
+        if (valEl) valEl.textContent = 'auto';
+        if (slider) slider.value = 100;
+      } else {
+        if (valEl) valEl.textContent = `${Math.round(devBrightness)}%`;
+        if (slider) slider.value = devBrightness;
+      }
+      applyBrightness();
+    }).catch(()=>{});
+  }
+
+  function toggleAutoSleep() {
+    devFetch('/dev/set_auto_sleep', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({auto_sleep: !autoSleepEnabled})})
+      .then(() => fetchDevSettings()).catch(()=>{});
+  }
+
+  function forceSleep() {
+    devFetch('/dev/set_forced_sleep', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({forced_sleep: true})})
+      .then(() => fetchDevSettings()).catch(()=>{});
+  }
+
+  function releaseForcedSleep() {
+    devFetch('/dev/set_forced_sleep', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({forced_sleep: false})})
+      .then(() => fetchDevSettings()).catch(()=>{});
+  }
+
+  function setBrightness(v) {
+    devFetch('/dev/set_brightness', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({brightness: v})})
+      .then(() => fetchDevSettings()).catch(()=>{});
+  }
+
+  function resetBrightness() {
+    devFetch('/dev/reset_brightness', {method:'POST'}).then(() => fetchDevSettings()).catch(()=>{});
+  }
+
+  // Brightness slider interactions
+  const _slider = document.getElementById('dev-brightness-slider');
+  if (_slider) {
+    _slider.addEventListener('input', (e) => {
+      const v = e.target.value;
+      const valEl = document.getElementById('dev-brightness-value');
+      if (valEl) valEl.textContent = `${v}%`;
+    });
+    _slider.addEventListener('change', (e) => {
+      setBrightness(Number(e.target.value));
+    });
+  }
+
+  // Initialize dev settings on load
+  fetchDevSettings();
+
+  // (Removed single-reset helpers; use "Clear Overrides" to reset all.)
+
+  function closePopup() {
+    document.getElementById('exit-popup').classList.remove('show');
+  }
+
+  function confirmExit() {
+    fetch('/exit', { method: 'POST' });
+  }
+
+  function reloadKiosk() {
+    // Fermer le popup
+    closePopup();
+    // Simple actualisation de la page (reload local)
+    showToast('Actualisation...', 'success', 1500);
+    setTimeout(() => { window.location.reload(); }, 200);
+  }
+
+  // Wire DOM elements and attach SSE after DOM is ready
+  document.addEventListener('DOMContentLoaded', () => {
+    sleepScreen = document.getElementById('sleep-screen') || null;
+    appEl = document.getElementById('app') || null;
+
+    // ensure initial visibility matches state
+    if (isSleeping) {
+      if (sleepScreen && sleepScreen.classList) sleepScreen.classList.remove('hidden');
+      if (appEl && appEl.classList) appEl.classList.add('hidden');
+    } else {
+      if (sleepScreen && sleepScreen.classList) sleepScreen.classList.add('hidden');
+      if (appEl && appEl.classList) appEl.classList.remove('hidden');
+    }
+
+    // Attach EventSource for SSE safely
+    try {
+      if (typeof EventSource !== 'undefined') {
+        evtSource = new EventSource('/stream');
+        evtSource.addEventListener('message', handleStreamMessage);
+        evtSource.addEventListener('open', () => console.log('SSE connected'));
+        evtSource.addEventListener('error', (e) => console.error('SSE error', e));
+      }
+    } catch (err) {
+      console.error('Failed to attach EventSource', err);
+    }
+
+    // Re-sync dev settings now that DOM is wired
+    fetchDevSettings();
+  });
+
+</script>
+  <div id="toasts"></div>
+</body>
+</html>

@@ -1,0 +1,6 @@
+flask
+spotipy
+requests
+psutil
+python-dotenv
+lyricsgenius
