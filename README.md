@@ -49,14 +49,15 @@ Optimisations d'interface pour tactile : commandes oversize, zones tactiles déd
 
 ⚙️ Installation & Configuration
 
-Installation rapide (PowerShell) :
+Installation rapide (Windows) :
 
 ```powershell
 cd "<chemin_du_projet>"
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+.\install.bat
 ```
+
+Le script `install.bat` installe directement les dépendances listées dans `requirements.txt` (installation globale via `pip`).
+Note: ce script n'utilise pas d'environnement virtuel par défaut.
 
 Configuration : copiez et éditez ` .env ` :
 
