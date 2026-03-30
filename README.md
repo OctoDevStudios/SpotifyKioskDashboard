@@ -17,6 +17,8 @@ Interface kiosque tactile locale pour afficher et contrôler la lecture Spotify 
 - Connectivité : USB‑C (Power Delivery), microSDXC, jack 3.5 mm, option LTE
 - Batterie : ≈10 heures d'utilisation typique
 
+- Conseil BIOS : La Surface Go 2 permet d'activer dans le UEFI le mode kiosque qui limite de charge à ~50% afin de préserver la batterie et éviter une usure prématurée.
+
 Optimisations d'interface pour tactile : commandes oversize, zones tactiles dédiées, navigation en plein écran et suppression du curseur en mode kiosque.
 
 ---
