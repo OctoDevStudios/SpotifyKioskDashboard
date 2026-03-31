@@ -4,6 +4,7 @@ Interface kiosque tactile locale pour afficher et contrôler la lecture Spotify 
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.8+](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
+[![Microsoft Edge](https://custom-icon-badges.demolab.com/badge/Microsoft%20Edge-2771D8?logo=edge-white&logoColor=white)](https://www.microsoft.com/fr-fr/edge/)
 
 ---
 
