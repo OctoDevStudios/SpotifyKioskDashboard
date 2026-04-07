@@ -112,6 +112,35 @@ $env:HOST='127.0.0.1'; $env:PORT='8080'; python app.py
 
 ---
 
+🔔 Notifications SMS (Free Mobile)
+
+Vous pouvez configurer l'envoi de notifications SMS via l'API Free Mobile pour recevoir des alertes sur votre téléphone lorsque certains événements critiques se produisent (mauvais code PIN dev, dépassement de quota Spotify, ou recevoir manuellement les métriques via le panneau développeur).
+
+Comment ça marche : utilisez votre identifiant Free et la clé d'identification fournie par Free Mobile, et le serveur appellera `https://smsapi.free-mobile.fr/sendmsg` en POST (`user`, `pass`, `msg`).
+
+Variables `.env` associées :
+
+```
+FREE_SMS_ENABLED=false
+FREE_SMS_USER=
+FREE_SMS_PASS=
+FREE_SMS_NOTIFY_PIN=true
+FREE_SMS_NOTIFY_QUOTA=true
+FREE_SMS_NOTIFY_METRICS=true
+FREE_SMS_MIN_INTERVAL=60
+```
+
+- `FREE_SMS_ENABLED` : activer/désactiver globalement l'envoi de SMS.
+- `FREE_SMS_USER` / `FREE_SMS_PASS` : identifiants Free Mobile (ne pas committer vos vraies clés).
+- `FREE_SMS_NOTIFY_PIN` : envoyer un SMS en cas de tentative de connexion dev avec un PIN invalide.
+- `FREE_SMS_NOTIFY_QUOTA` : envoyer un SMS quand l'application détecte un dépassement de quota Spotify (429 ou quota local).
+- `FREE_SMS_NOTIFY_METRICS` : autorise l'envoi manuel des métriques via le bouton "Envoyer Metrics SMS" dans le panneau développeur.
+- `FREE_SMS_MIN_INTERVAL` : intervalle minimum (secondes) entre deux SMS pour le même type d'événement (protection anti-spam).
+
+Comportement UI : le bouton "Envoyer Metrics SMS" dans le panneau développeur n'apparaît que si `FREE_SMS_ENABLED=true` ET `FREE_SMS_NOTIFY_METRICS=true`.
+
+---
+
 📜 Licence
 
 Ce projet est distribué sous licence **MIT** — voir le fichier `LICENSE` pour le texte complet.

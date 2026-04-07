@@ -62,6 +62,23 @@ DEV_PIN = os.getenv('DEV_PIN', '')
 # Default is now 'true' to protect control routes by default.
 REQUIRE_CONTROL_PIN = os.getenv('REQUIRE_CONTROL_PIN', 'true').lower() in ('1', 'true', 'yes')
 
+# Free Mobile SMS notifications (via https://smsapi.free-mobile.fr)
+# Configure in .env: FREE_SMS_ENABLED, FREE_SMS_USER, FREE_SMS_PASS, and per-event toggles.
+FREE_SMS_ENABLED = os.getenv('FREE_SMS_ENABLED', 'false').lower() in ('1', 'true', 'yes')
+FREE_SMS_USER = os.getenv('FREE_SMS_USER')
+FREE_SMS_PASS = os.getenv('FREE_SMS_PASS')
+FREE_SMS_NOTIFY_PIN = os.getenv('FREE_SMS_NOTIFY_PIN', 'true').lower() in ('1', 'true', 'yes')
+FREE_SMS_NOTIFY_QUOTA = os.getenv('FREE_SMS_NOTIFY_QUOTA', 'true').lower() in ('1', 'true', 'yes')
+FREE_SMS_NOTIFY_METRICS = os.getenv('FREE_SMS_NOTIFY_METRICS', 'true').lower() in ('1', 'true', 'yes')
+try:
+    FREE_SMS_MIN_INTERVAL = int(os.getenv('FREE_SMS_MIN_INTERVAL', '60'))
+except Exception:
+    FREE_SMS_MIN_INTERVAL = 60
+
+if FREE_SMS_ENABLED and (not FREE_SMS_USER or not FREE_SMS_PASS):
+    print("FREE_SMS_ENABLED set but FREE_SMS_USER/FREE_SMS_PASS missing: disabling FreeSMS")
+    FREE_SMS_ENABLED = False
+
 # Read Spotify credentials from environment (no fallbacks)
 CLIENT_ID = os.getenv('SPOTIPY_CLIENT_ID')
 CLIENT_SECRET = os.getenv('SPOTIPY_CLIENT_SECRET')
@@ -179,6 +196,69 @@ metrics = {
     "api_calls_total": 0,
     "quota_exceeded_total": 0
 }
+# SMS notification state
+sms_lock = threading.Lock()
+sms_last_sent = {}
+
+def send_free_sms(message, event='generic'):
+    """Send a Free Mobile SMS if enabled and not rate-limited for the event.
+
+    Returns a dict with at least the `ok` boolean and optional diagnostic keys.
+    """
+    if not FREE_SMS_ENABLED:
+        return {"ok": False, "error": "disabled"}
+    now = time.time()
+    with sms_lock:
+        last = sms_last_sent.get(event, 0)
+        if now - last < FREE_SMS_MIN_INTERVAL:
+            return {"ok": False, "error": "throttled", "retry_after": int(FREE_SMS_MIN_INTERVAL - (now - last))}
+        sms_last_sent[event] = now
+
+    url = "https://smsapi.free-mobile.fr/sendmsg"
+    payload = {"user": FREE_SMS_USER, "pass": FREE_SMS_PASS, "msg": message}
+    try:
+        # Try POST first (API accepts either POST or GET)
+        r = requests.post(url, data=payload, timeout=5)
+        if r.status_code == 200:
+            try:
+                with metrics_lock:
+                    metrics.setdefault("sms_sent_total", 0)
+                    metrics["sms_sent_total"] += 1
+            except Exception:
+                pass
+            return {"ok": True, "method": "post"}
+
+        # POST failed — try GET as a fallback to provide more robustness
+        try:
+            r_get = requests.get(url, params=payload, timeout=5)
+            if r_get is not None and getattr(r_get, 'status_code', None) == 200:
+                try:
+                    with metrics_lock:
+                        metrics.setdefault("sms_sent_total", 0)
+                        metrics["sms_sent_total"] += 1
+                except Exception:
+                    pass
+                return {"ok": True, "method": "get"}
+        except Exception:
+            r_get = None
+
+        body_post = getattr(r, 'text', None) if r is not None else None
+        status_post = getattr(r, 'status_code', None)
+        status_get = getattr(r_get, 'status_code', None) if r_get is not None else None
+        body_get = getattr(r_get, 'text', None) if r_get is not None else None
+
+        try:
+            print(f"FreeSMS send failed POST: HTTP {status_post} body={body_post} ; GET fallback status={status_get} body={body_get}")
+        except Exception:
+            pass
+
+        return {"ok": False, "status_post": status_post, "body_post": body_post, "status_get": status_get, "body_get": body_get}
+    except Exception as e:
+        try:
+            print(f"FreeSMS send exception: {e}")
+        except Exception:
+            pass
+        return {"ok": False, "error": str(e)}
 # Debounce interval for persisting quota state to disk (seconds)
 QUOTA_SAVE_INTERVAL = 60
 # Last time we saved quota state (epoch seconds)
@@ -277,6 +357,21 @@ def safe_spotify_request(func, *args, **kwargs):
             poll_event.set()
         except Exception:
             pass
+        try:
+            if FREE_SMS_ENABLED and FREE_SMS_NOTIFY_QUOTA:
+                # best-effort: include simple counts (don't lock long)
+                with api_lock:
+                    calls_min = sum(1 for ts in api_calls_min if ts >= time.time() - 60)
+                    calls_day = sum(1 for ts in api_calls_day if ts >= time.time() - 86400)
+                msg = (
+                    f"⚠️ Quota local Spotify atteint\n"
+                    f"Dernière minute: {calls_min}/{API_LIMIT_PER_MIN} (reste {max(0, API_LIMIT_PER_MIN-calls_min)})\n"
+                    f"Aujourd'hui: {calls_day}/{API_LIMIT_PER_DAY} (reste {max(0, API_LIMIT_PER_DAY-calls_day)})\n"
+                    "— Spotify Kiosk"
+                )
+                send_free_sms(msg, event='quota_local')
+        except Exception:
+            pass
         return {'ok': False, 'quota': True}
 
     try:
@@ -338,6 +433,18 @@ def safe_spotify_request(func, *args, **kwargs):
                 threading.Timer(delay, _clear_quota).start()
             except Exception:
                 # best-effort: if we can't schedule a timer, clear on next loop
+                pass
+
+            try:
+                if FREE_SMS_ENABLED and FREE_SMS_NOTIFY_QUOTA:
+                    msg = (
+                        f"⚠️ Spotify: HTTP 429 reçu\n"
+                        f"Durée pause: {delay}s\n"
+                        "Réessaie automatique…\n"
+                        "— Spotify Kiosk"
+                    )
+                    send_free_sms(msg, event='quota_429')
+            except Exception:
                 pass
 
             return {'ok': False, 'quota': True, 'retry_after': delay}
@@ -436,6 +543,21 @@ def _enforce_dev_pin():
                 provided = None
 
         if not provided or provided != DEV_PIN:
+            # Send FreeSMS on wrong DEV PIN if enabled and configured
+            try:
+                if FREE_SMS_ENABLED and FREE_SMS_NOTIFY_PIN:
+                    remote = request.remote_addr or 'unknown'
+                    ts = time.strftime('%d/%m/%Y %H:%M:%S', time.localtime())
+                    msg = (
+                        f"🔒 Alerte PIN incorrect\n"
+                        f"Heure: {ts}\n"
+                        f"Origine: {remote}\n"
+                        f"Endpoint: {path}\n"
+                        "— Spotify Kiosk"
+                    )
+                    send_free_sms(msg, event='pin_failure')
+            except Exception:
+                pass
             return jsonify({"ok": False, "error": "unauthorized"}), 401
 
 def fetch_spotify_loop():
@@ -672,7 +794,14 @@ def get_weather():
 def index():
     # Pass developer PIN from environment into the template (avoid hard-coded PIN in source)
     dev_pin = os.getenv('DEV_PIN', '')
-    return render_template("index.html", dev_pin=dev_pin)
+    return render_template(
+        "index.html",
+        dev_pin=dev_pin,
+        free_sms_enabled=FREE_SMS_ENABLED,
+        free_sms_notify_pin=FREE_SMS_NOTIFY_PIN,
+        free_sms_notify_quota=FREE_SMS_NOTIFY_QUOTA,
+        free_sms_notify_metrics=FREE_SMS_NOTIFY_METRICS,
+    )
 
 @app.route("/stream")
 def stream():
@@ -864,6 +993,40 @@ def dev_get_dev_overrides():
         return jsonify(dev_overrides)
 
 
+@app.route('/pin/report', methods=['POST'])
+def report_pin_attempt():
+    """Endpoint called by the client when a PIN entry attempt failed locally.
+
+    This endpoint is intentionally outside `/dev/*` so the client can report
+    failed PIN attempts even when it doesn't have a valid PIN. The server will
+    optionally send a FreeSMS notification (throttled).
+    """
+    data = request.get_json(silent=True) or {}
+    attempted = data.get('attempted') or data.get('pin') or ''
+    remote = request.remote_addr or 'unknown'
+    ts = time.strftime('%d/%m/%Y %H:%M:%S', time.localtime())
+
+    if not FREE_SMS_ENABLED or not FREE_SMS_NOTIFY_PIN:
+        return jsonify({"ok": False, "error": "freesms_disabled"}), 403
+
+    msg = (
+        f"🔒 Alerte PIN incorrect\n"
+        f"Heure: {ts}\n"
+        f"Origine: {remote}\n"
+        f"Tentative: {attempted or '—'}\n"
+        "— Spotify Kiosk"
+    )
+
+    try:
+        res = send_free_sms(msg, event='pin_failure')
+        if isinstance(res, dict) and res.get('ok'):
+            return jsonify({"ok": True, "detail": res}), 200
+        else:
+            return jsonify({"ok": False, "error": "sms_failed", "detail": res}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/dev/reset_weather", methods=["POST"])
 def dev_reset_weather():
     global weather_cache
@@ -908,6 +1071,11 @@ def dev_simulate_429():
         poll_event.set()
     except Exception:
         pass
+    try:
+        if FREE_SMS_ENABLED and FREE_SMS_NOTIFY_QUOTA:
+            send_free_sms(f"⚠️ Simulation 429 activée (delay {delay}s)", event='quota_simulated')
+    except Exception:
+        pass
     return jsonify({"ok": True, "simulated": True, "retry_after": delay})
 
 
@@ -926,6 +1094,50 @@ def dev_reconnect_spotify():
         if res.get('quota'):
             return jsonify({"ok": False, "error": "quota_exceeded"}), 429
         return jsonify({"ok": False, "error": str(res.get('error'))}), 500
+
+
+@app.route("/dev/send_metrics_sms", methods=["POST"])
+def dev_send_metrics_sms():
+    """Send a summary of API metrics via Free Mobile SMS (developer-only).
+    Protected by the same DEV_PIN enforcement in @app.before_request.
+    """
+    if not FREE_SMS_ENABLED or not FREE_SMS_NOTIFY_METRICS:
+        return jsonify({"ok": False, "error": "freesms_disabled"}), 403
+
+    try:
+        with api_lock, metrics_lock:
+            now = time.time()
+            calls_min = sum(1 for ts in api_calls_min if ts >= now - 60)
+            calls_day = sum(1 for ts in api_calls_day if ts >= now - 86400)
+            remaining_min = max(0, API_LIMIT_PER_MIN - calls_min)
+            remaining_day = max(0, API_LIMIT_PER_DAY - calls_day)
+            total_calls = metrics.get("api_calls_total", 0)
+            quota_total = metrics.get("quota_exceeded_total", 0)
+
+        ts = time.strftime('%d/%m/%Y %H:%M:%S', time.localtime())
+        msg = (
+            f"📊 Statistiques Spotify - Kiosk\n"
+            f"Heure: {ts}\n"
+            f"⏱ Dernière minute: {calls_min}/{API_LIMIT_PER_MIN} (reste {remaining_min})\n"
+            f"📈 Aujourd'hui: {calls_day}/{API_LIMIT_PER_DAY} (reste {remaining_day})\n"
+            f"🔁 Appels totaux: {total_calls}\n"
+            f"⚠️ Quota excédé (total): {quota_total}\n"
+            "— Spotify Kiosk"
+        )
+
+        res = send_free_sms(msg, event='metrics')
+        if not isinstance(res, dict):
+            # Backwards compatibility: if a boolean was returned, coerce
+            if res:
+                return jsonify({"ok": True}), 200
+            return jsonify({"ok": False, "error": "sms_failed"}), 500
+
+        if not res.get('ok'):
+            return jsonify({"ok": False, "error": "sms_failed", "detail": res}), 500
+
+        return jsonify({"ok": True, "detail": res}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/dev/full_reload", methods=["POST"])

@@ -413,6 +413,9 @@
       <button onclick="devResetTime()" class="dev-small">Reset heure</button>
       <button onclick="devReconnectSpotify()" class="dev-small">Reconnect Spotify</button>
       <button onclick="simulate429()" class="dev-small">Simuler Erreur 429 (10s)</button>
+      {% if free_sms_enabled and free_sms_notify_metrics %}
+      <button id="btn-send-metrics-sms" onclick="sendMetricsSMS()" class="dev-small">Envoyer Metrics SMS</button>
+      {% endif %}
       <button onclick="devClearOverrides()" class="dev-small">Clear Overrides</button>
     </div>
     <div style="margin-top:1vw;">
@@ -1156,6 +1159,25 @@
             box.classList.add('flash-red');
             setTimeout(() => box.classList.remove('flash-red'), 520);
           }
+          // Report failed PIN attempt to server so it can send notifications
+          try {
+            fetch('/pin/report', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ attempted: devEnteredPin })
+            }).then(r => {
+              if (r.ok) {
+                showToast('Alerte PIN envoyée', 'success');
+              } else {
+                r.json().then(j => showToast('Alerte non envoyée: ' + (j.error || r.status), 'error')).catch(() => showToast('Erreur envoi alerte', 'error'));
+              }
+            }).catch(() => {
+              showToast('Erreur envoi alerte', 'error');
+            });
+          } catch (e) {
+            /* ignore */
+          }
+
           devEnteredPin = '';
           updatePinDisplay();
         }
@@ -1250,6 +1272,17 @@
         if (j && j.ok) showToast('Simulation 429 activée (10s)', 'success');
         else showToast('Échec simulation: ' + (j && j.error ? j.error : JSON.stringify(j)), 'error');
       }).catch(e => showToast('Erreur simulate 429', 'error'));
+  }
+
+  function sendMetricsSMS() {
+    devFetch('/dev/send_metrics_sms', {method: 'POST'})
+      .then(r => {
+        if (r.status === 200) {
+          showToast('SMS metrics envoyé', 'success');
+        } else {
+          r.json().then(j => showToast('Erreur SMS: ' + (j.error || r.status), 'error')).catch(() => showToast('Erreur SMS', 'error'));
+        }
+      }).catch(() => showToast('Erreur SMS', 'error'));
   }
 
   // Apply brightness override (if set) or use default CSS behavior
